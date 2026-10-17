@@ -10,7 +10,6 @@ from lorax import (
     benchmark,
     make_synthetic_task,
     merge_adapter,
-    mse_loss,
     train_step,
     unmerge,
 )
