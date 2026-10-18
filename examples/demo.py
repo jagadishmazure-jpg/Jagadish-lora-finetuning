@@ -1,7 +1,8 @@
-"""Train a LoRA adapter on a synthetic rank-4 task, merge it, and swap adapters on one frozen base."""
+"""Train a LoRA adapter on a synthetic rank-4 task, merge it, swap adapters on one frozen base, and run DPO on an adapter."""
 import numpy as np
 
 from lorax import LoRAConfig, LoRALinear, benchmark, merge_adapter
+from lorax.dpo import dpo_loss, dpo_step, make_preference_dataset, preference_margin
 from lorax.eval import adapter_swap_demo, make_synthetic_task
 from lorax.train import train_step
 
@@ -29,3 +30,19 @@ print("Frozen base weight unchanged by training:", bool(np.array_equal(layer.W, 
 swap = adapter_swap_demo()
 print("Adapter swap losses on the shared base:",
       {k: f"{v:.2e}" for k, v in swap["swapped_losses"].items()})
+
+# DPO on the adapter: 16 preference pairs, 200 steps, frozen base and reference.
+
+cfg = LoRAConfig(rank=2, alpha=8.0, dropout=0.0)
+policy = LoRALinear(8, 6, cfg, rng=np.random.default_rng(21))
+ref = LoRALinear(8, 6, cfg, rng=np.random.default_rng(1021))
+ref.W = policy.W.copy()
+policy.train()
+x, y_w, y_l = make_preference_dataset(n=16, seed=22)
+w0 = policy.W.copy()
+loss0 = dpo_loss(policy, ref, x, y_w, y_l)
+for _ in range(200):
+    dpo_step(policy, ref, x, y_w, y_l, beta=1.0, lr=0.5)
+m = preference_margin(policy, ref, x, y_w, y_l)
+print(f"DPO: loss {loss0:.4f} -> {dpo_loss(policy, ref, x, y_w, y_l):.4f}, mean margin {m.mean():.2f}, "
+      f"pairs preferring the chosen answer {(m > 0).sum()}/16, base W unchanged: {np.array_equal(policy.W, w0)}")

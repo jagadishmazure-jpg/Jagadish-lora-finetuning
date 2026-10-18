@@ -21,14 +21,14 @@ log π(y|x) = log-softmax(logits)[y]. Gradients flow through the adapter
 path only; W is frozen by construction, exactly as in train.py.
 
 Backprop (batch mean, N = batch size, m_i = β·(r_w − r_l) per example):
-    dL/dm_i = σ(m_i) − 1
-    dy_w    = dL/dm_i · β · (onehot(y_w) − softmax(l_w))
-    dy_l    = −dL/dm_i · β · (onehot(y_l) − softmax(l_l))
-    dy      = dy_w + dy_l          (shared forward pass per prompt;
-                                   the softmax terms cancel:
-                                   dy = coef · (onehot(y_w) − onehot(y_l)))
-    dB  = s · dyᵀh₂ / N,   dh₂ = s · dy·B / N,
-    dh  = dh₂ ⊙ mask,      dA  = dhᵀx / N
+    dL/dm_i = (σ(m_i) − 1) / N
+    dy      = dL/dm_i · β · (onehot(y_w) − onehot(y_l))
+              (one forward pass per prompt, so the softmax terms of the
+              chosen and rejected log-probs cancel)
+    dB  = s · dyᵀh₂,   dh₂ = s · dy·B,
+    dh  = dh₂ ⊙ mask,  dA  = dhᵀx
+The 1/N lives in dy only. tests/test_lorax.py checks these against finite
+differences.
 """
 
 from __future__ import annotations

@@ -365,3 +365,30 @@ def test_dpo_is_deterministic():
         return preference_margin(layer, ref, x, y_w, y_l)
 
     np.testing.assert_array_equal(run(23), run(23))
+
+
+def test_dpo_gradients_match_finite_differences():
+    layer, ref = make_policy_pair(seed=31)
+    rng = np.random.default_rng(32)
+    layer.B = rng.standard_normal(layer.B.shape) * 0.5  # non-zero B so dA is non-trivial
+    x, y_w, y_l = make_preference_dataset(n=5, seed=33)
+    beta = 0.7
+
+    A0, B0 = layer.A.copy(), layer.B.copy()
+    dpo_step(layer, ref, x, y_w, y_l, beta=beta, lr=1.0)
+    dA, dB = A0 - layer.A, B0 - layer.B  # lr = 1, so the update is the gradient
+    layer.A, layer.B = A0.copy(), B0.copy()
+
+    eps = 1e-6
+    for name, analytic in (("A", dA), ("B", dB)):
+        param = getattr(layer, name)
+        numeric = np.zeros_like(param)
+        for idx in np.ndindex(param.shape):
+            orig = param[idx]
+            param[idx] = orig + eps
+            up = dpo_loss(layer, ref, x, y_w, y_l, beta)
+            param[idx] = orig - eps
+            down = dpo_loss(layer, ref, x, y_w, y_l, beta)
+            param[idx] = orig
+            numeric[idx] = (up - down) / (2 * eps)
+        np.testing.assert_allclose(analytic, numeric, rtol=1e-4, atol=1e-8)

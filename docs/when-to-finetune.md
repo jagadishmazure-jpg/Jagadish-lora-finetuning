@@ -31,12 +31,18 @@ Do you need the model to KNOW something new (facts, docs, private data)?
   *better vs worse*.
 
 ### 2. Data volume
+
+These bands are my own rules of thumb, not measured thresholds. The right
+numbers depend on the task and the base model.
+
 - **0–50 examples**: prompt engineering (few-shot). Finetuning on this
   little data mostly memorizes noise.
 - **50–10k examples**: LoRA SFT sweet spot. This repo's `lorax` trains a
-  rank-8 adapter on a synthetic task in seconds on CPU; real adapters
+  rank-4 adapter on a synthetic task in under a second on CPU (see the README run); real adapters
   train in minutes-to-hours on one GPU.
-- **10k+ preference pairs**: DPO starts to beat SFT-only pipelines.
+- **Preference pairs**: DPO needs pairs that rank two plausible answers,
+  usually after an SFT pass. How many it takes depends on the task, so
+  measure it rather than assuming a threshold.
 - **Millions of tokens of knowledge**: don't finetune it in — that's
   what RAG is for.
 
