@@ -8,8 +8,13 @@ from lorax import (
     LoRALinear,
     adapter_swap_demo,
     benchmark,
+    dpo_loss,
+    dpo_step,
+    implicit_reward,
+    make_preference_dataset,
     make_synthetic_task,
     merge_adapter,
+    preference_margin,
     train_step,
     unmerge,
 )
@@ -263,3 +268,100 @@ def test_benchmark_param_report():
     res = benchmark(in_features=16, out_features=16, rank=4, steps=5, seed=1)
     assert res.trainable_params == 4 * 16 + 16 * 4
     assert res.full_params == 16 * 16
+
+
+# ----------------------------------------------------------------------
+# DPO from scratch
+# ----------------------------------------------------------------------
+def make_policy_pair(in_f=8, vocab=6, rank=2, seed=0):
+    cfg = LoRAConfig(rank=rank, alpha=8.0, dropout=0.0)
+    layer = LoRALinear(in_f, vocab, cfg, rng=np.random.default_rng(seed))
+    ref = LoRALinear(in_f, vocab, cfg, rng=np.random.default_rng(seed + 1000))
+    ref.W = layer.W.copy()  # same frozen base; ref adapter never trained
+    layer.train()
+    return layer, ref
+
+
+def test_implicit_reward_zero_at_init():
+    layer, ref = make_policy_pair(seed=10)
+    x, y_w, y_l = make_preference_dataset(n=8, seed=11)
+    np.testing.assert_allclose(
+        implicit_reward(layer, ref, x, y_w), np.zeros(8), atol=1e-12
+    )
+
+
+def test_dpo_loss_is_log2_at_init():
+    # margin = 0 everywhere at init -> -log σ(0) = log 2
+    layer, ref = make_policy_pair(seed=12)
+    x, y_w, y_l = make_preference_dataset(n=8, seed=13)
+    assert dpo_loss(layer, ref, x, y_w, y_l) == pytest.approx(np.log(2.0))
+
+
+def test_dpo_beta_must_be_positive():
+    layer, ref = make_policy_pair(seed=14)
+    x, y_w, y_l = make_preference_dataset(n=4, seed=15)
+    with pytest.raises(ValueError):
+        dpo_loss(layer, ref, x, y_w, y_l, beta=0.0)
+    with pytest.raises(ValueError):
+        dpo_step(layer, ref, x, y_w, y_l, beta=-1.0, lr=0.1)
+
+
+def test_dpo_step_requires_training_mode():
+    layer, ref = make_policy_pair(seed=16)
+    layer.eval()
+    x, y_w, y_l = make_preference_dataset(n=4, seed=17)
+    with pytest.raises(ValueError):
+        dpo_step(layer, ref, x, y_w, y_l, lr=0.1)
+
+
+def test_preference_dataset_has_distinct_tokens():
+    x, y_w, y_l = make_preference_dataset(n=32, in_features=8, vocab_size=6, seed=18)
+    assert x.shape == (32, 8)
+    assert (y_w != y_l).all()
+    assert y_w.min() >= 0 and y_w.max() < 6
+
+
+def test_dpo_single_step_increases_margin():
+    layer, ref = make_policy_pair(seed=19)
+    x, y_w, y_l = make_preference_dataset(n=1, seed=20)
+    before = preference_margin(layer, ref, x, y_w, y_l)[0]
+    dpo_step(layer, ref, x, y_w, y_l, beta=1.0, lr=0.5)
+    after = preference_margin(layer, ref, x, y_w, y_l)[0]
+    assert after > before
+
+
+def test_dpo_shifts_policy_toward_preferred_completions():
+    layer, ref = make_policy_pair(seed=21)
+    x, y_w, y_l = make_preference_dataset(n=16, seed=22)
+    w_before = layer.W.copy()
+    ref_w_before, ref_b_before = ref.W.copy(), ref.B.copy()
+
+    margin_before = preference_margin(layer, ref, x, y_w, y_l)
+    loss_before = dpo_loss(layer, ref, x, y_w, y_l)
+    assert margin_before.mean() == pytest.approx(0.0, abs=1e-9)
+
+    for _ in range(200):
+        dpo_step(layer, ref, x, y_w, y_l, beta=1.0, lr=0.5)
+
+    margin_after = preference_margin(layer, ref, x, y_w, y_l)
+    loss_after = dpo_loss(layer, ref, x, y_w, y_l)
+
+    # the policy measurably shifts toward the preferred completions
+    assert margin_after.mean() > margin_before.mean() + 2.0
+    assert (margin_after > 0).mean() == pytest.approx(1.0)
+    assert loss_after < loss_before
+    # frozen weights untouched: W bitwise identical, reference never trained
+    assert np.array_equal(layer.W, w_before)
+    assert np.array_equal(ref.W, ref_w_before)
+    assert np.array_equal(ref.B, ref_b_before)
+
+
+def test_dpo_is_deterministic():
+    def run(seed):
+        layer, ref = make_policy_pair(seed=seed)
+        x, y_w, y_l = make_preference_dataset(n=8, seed=seed + 1)
+        for _ in range(10):
+            dpo_step(layer, ref, x, y_w, y_l, beta=1.0, lr=0.5)
+        return preference_margin(layer, ref, x, y_w, y_l)
+
+    np.testing.assert_array_equal(run(23), run(23))
